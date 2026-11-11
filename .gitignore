@@ -1,0 +1,29 @@
+# Rust build output
+/target
+**/*.rs.bk
+*.pdb
+
+# Release package
+/dist
+
+# WASM / Trunk
+/frontend/dist
+.trunk
+
+# Data and logs
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
