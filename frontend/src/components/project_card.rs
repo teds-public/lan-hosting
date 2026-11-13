@@ -13,6 +13,7 @@ pub fn project_card(props: &Props) -> Html {
     let project = &props.project;
     let on_refresh = props.on_refresh.clone();
     let logs = use_state(|| None::<String>);
+    let action_error = use_state(|| None::<String>);
 
     let status_class = match project.status.as_str() {
         "running" => "status-running",
@@ -24,11 +25,16 @@ pub fn project_card(props: &Props) -> Html {
     let on_start = {
         let id = project.id.clone();
         let on_refresh = on_refresh.clone();
+        let action_error = action_error.clone();
         Callback::from(move |_| {
             let id = id.clone();
             let on_refresh = on_refresh.clone();
+            let action_error = action_error.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let _ = api::start_project(&id).await;
+                match api::start_project(&id).await {
+                    Ok(()) => action_error.set(None),
+                    Err(message) => action_error.set(Some(message)),
+                }
                 on_refresh.emit(());
             });
         })
@@ -116,13 +122,20 @@ pub fn project_card(props: &Props) -> Html {
                 <div>{format!("Type: {}", project.project_type)}</div>
                 <div>{format!("Port: {}", project.port)}</div>
                 if !project.lan_urls.is_empty() {
-                    <div>
-                        <a href={project.lan_urls[0].clone()} target="_blank">
-                            {&project.lan_urls[0]}
-                        </a>
+                    <div class="lan-urls">
+                        {for project.lan_urls.iter().map(|url| {
+                            html! {
+                                <div>
+                                    <a href={url.clone()} target="_blank">{url}</a>
+                                </div>
+                            }
+                        })}
                     </div>
                 }
             </div>
+            if let Some(err) = (*action_error).clone() {
+                <div class="error">{err}</div>
+            }
             <div class="project-actions">
                 if project.status == "stopped" || project.status == "crashed" {
                     <button class="btn-primary" onclick={on_start}>{"Start"}</button>

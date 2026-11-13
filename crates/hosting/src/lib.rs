@@ -89,7 +89,9 @@ pub async fn start_node(
 
     let mut env = HashMap::new();
     env.insert("PORT".to_string(), port.to_string());
-    env.insert("HOST".to_string(), host);
+    env.insert("HOST".to_string(), host.clone());
+    env.insert("BIND_ADDRESS".to_string(), host);
+    env.insert("NODE_ENV".to_string(), "production".to_string());
 
     let pid = lan_process_manager::start_managed(id.clone(), cmd, args, cwd, env, log_file).await?;
 

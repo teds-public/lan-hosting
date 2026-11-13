@@ -27,13 +27,26 @@ fn get_lan_ipv4() -> Vec<String> {
     if let Ok(interfaces) = get_if_addrs::get_if_addrs() {
         for iface in interfaces {
             if let IpAddr::V4(addr) = iface.ip() {
-                if !iface.is_loopback() {
-                    ips.push(addr.to_string());
+                if iface.is_loopback() {
+                    continue;
                 }
+                if addr.is_link_local() {
+                    continue;
+                }
+                let name = iface.name.to_lowercase();
+                if ["docker", "veth", "virbr", "vmnet", "virtual", "tailscale", "wsl", "hyper-v", "br-"]
+                    .iter()
+                    .any(|prefix| name.contains(prefix))
+                {
+                    continue;
+                }
+                ips.push(addr.to_string());
             }
         }
     }
 
+    ips.sort();
+    ips.dedup();
     ips
 }
 
@@ -165,10 +178,32 @@ pub async fn start_project(
                 start_cmd,
                 project.port as u16,
                 state.config.bind_host.clone(),
-                log_file,
+                log_file.clone(),
             )
             .await
             .map_err(internal_error)?;
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+            if !lan_hosting_core::is_hosting(&id, Some(pid as i64)) {
+                let code = lan_hosting_core::node_exit_code(&id);
+                let tail = lan_process_manager::read_tail(&log_file, 4 * 1024);
+                let detail = tail.lines().last().unwrap_or("").trim();
+                lan_database::set_status(&state.db, &id, "crashed", code.map(|c| c as i64))
+                    .await
+                    .map_err(internal_error)?;
+                let hint = if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Last log: {}", detail.chars().take(300).collect::<String>())
+                };
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    format!(
+                        "Node process exited immediately (code {:?}). Check that dependencies are installed and the start command listens on PORT {}.{}",
+                        code, project.port, hint
+                    ),
+                ));
+            }
 
             lan_database::set_status(&state.db, &id, "running", Some(pid as i64))
                 .await

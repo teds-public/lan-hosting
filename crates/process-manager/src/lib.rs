@@ -19,6 +19,8 @@ type ProcessMap = Arc<Mutex<HashMap<String, ManagedProcess>>>;
 
 lazy_static::lazy_static! {
     static ref PROCESSES: ProcessMap = Arc::new(Mutex::new(HashMap::new()));
+    static ref EXIT_CODES: Arc<Mutex<HashMap<String, i32>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 }
 
 pub fn log_file_for(logs_dir: &Path, id: &str) -> PathBuf {
@@ -58,10 +60,14 @@ pub async fn start_managed(
     log_file: PathBuf,
 ) -> Result<u32> {
     stop_managed(&id).await;
+    EXIT_CODES.lock().unwrap().remove(&id);
 
-    let mut cmd = Command::new(&command);
-    cmd.args(&args)
-        .current_dir(&cwd)
+    if !cwd.is_dir() {
+        anyhow::bail!("Project directory not found: {}", cwd.display());
+    }
+
+    let mut cmd = build_command(&command, &args);
+    cmd.current_dir(&cwd)
         .envs(env)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -102,6 +108,7 @@ pub async fn start_managed(
         });
     }
 
+    let watch_log = log_file.clone();
     let proc = ManagedProcess {
         id: id.clone(),
         child,
@@ -110,8 +117,52 @@ pub async fn start_managed(
         log_file,
     };
 
-    PROCESSES.lock().unwrap().insert(id, proc);
+    PROCESSES.lock().unwrap().insert(id.clone(), proc);
+    spawn_exit_watcher(id, watch_log);
     Ok(pid.unwrap_or(0))
+}
+
+fn build_command(command: &str, args: &[String]) -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", command]).args(args);
+        cmd
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = Command::new(command);
+        cmd.args(args);
+        cmd
+    }
+}
+
+fn spawn_exit_watcher(id: String, log_file: PathBuf) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            let status = PROCESSES
+                .lock()
+                .unwrap()
+                .get_mut(&id)
+                .and_then(|proc| proc.child.try_wait().transpose())
+                .transpose();
+            match status {
+                Ok(Some(exit)) => {
+                    let code = exit.code().unwrap_or(-1);
+                    PROCESSES.lock().unwrap().remove(&id);
+                    EXIT_CODES.lock().unwrap().insert(id.clone(), code);
+                    write_log(&log_file, "sys", &format!("process exited with code {}", code));
+                    break;
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    error!("Exit watcher failed for {}: {}", id, e);
+                    break;
+                }
+            }
+        }
+    });
 }
 
 pub async fn stop_managed(id: &str) -> bool {
@@ -146,5 +197,10 @@ pub fn is_running(id: &str, _pid: Option<i64>) -> bool {
 }
 
 pub fn get_exit_code(id: &str) -> Option<i32> {
-    PROCESSES.lock().unwrap().get(id).and_then(|p| p.exit_code)
+    PROCESSES
+        .lock()
+        .unwrap()
+        .get(id)
+        .and_then(|p| p.exit_code)
+        .or_else(|| EXIT_CODES.lock().unwrap().get(id).copied())
 }
